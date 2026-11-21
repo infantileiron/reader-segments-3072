@@ -6,7 +6,7 @@
 
 模拟客户山岚内容社有会员运营组4人、编辑6人，试点240位订阅会员。原流程是运营人员导出 `山岚_会员周阅读_20261109.xlsx`，按阅读次数手工分组，再把名单和选题建议发给编辑。三个痛点是篇数与比例量纲混用、分群名单随工作簿修订漂移、内容建议无法追溯到当时的行为画像。本项目承接上游最近完整自然周的行为聚合，替代手工分组与名单归档，下游由编辑和运营负责人审阅内容主题、渠道假设及频次。
 
-业务模块：阅读档案（录入/完整字段修订）、特征选择（2–3维、k=2–6）、分群图谱（标准化散点、轮廓系数、原始单位画像、群成员）、触达方案（冻结名单、站内起草、负责人签核与导出）。三类核心实体为Reader、Segment、Outreach；另有用户与审计记录。不连接真实会员系统或外发服务。
+业务模块：阅读档案（录入/完整字段修订）、特征选择（2–3维、k=2–6）、分群图谱（标准化散点、轮廓系数、原始单位画像、群成员）、触达方案（冻结名单、站内起草、负责人签核与导出）、自然周联合排期（多方案候选合并、每周一次、目标人数与确认冻结）。三类核心实体为Reader、Segment、Outreach；另有用户、审计与排期批次/排期项记录。不连接真实会员系统或外发服务。
 
 |角色|权限和页面|典型动作|
 |---|---|---|
@@ -35,6 +35,20 @@ Python先用StandardScaler的总体均值和总体标准差生成z=(x−mean)/st
 
 样本数≤k、所选常量列、唯一特征点少于k、实际群数不足、缺失/非有限值均明确失败；不静默补值、降k或删除样本。输入验证422，重复会员编号409，队列故障503。任务失败保存failed和错误原因，修订后新建版本。创建时冻结输入，worker保存成员、中心、画像、轮廓系数、scaler参数、seed和checksum。触达草案保存版本成员副本，不随后续档案修改漂移。分群只描述行为相似性，不判断会员价值或因果关系。
 
+## 自然周联合排期口径
+
+多个触达方案可能覆盖同一会员，逐案导出会重复打扰，因此排期以ISO-8601自然周（周一为`week_start`）为单位联合进行。一次排期合并各参与方案保存时冻结的成员为候选，**同一会员每周最多入选一次**；每个方案单独设定目标人数（方案侧容量）。
+
+选解按字典序优化，结果确定可复核：
+
+1. 先最大化总入选人数（带容量二分匹配：方案拆成目标人数个虚拟槽位，会员侧容量为1，Kuhn增广路求最大匹配）；
+2. 在总入选人数不变的前提下，最大化各方案最低目标满足率（对0–100整数阈值二分，配合下界可行性判定）；
+3. 仍并列时按方案编号、再按会员编号的字典序贪心构造确定解。
+
+候选合并后识别**交叉候选**（同属多个方案冻结名单的会员）。页面与接口逐方案给出每位候选的入选/落选结果及原因：入选、本周重复（名额已给其他方案）、本周已被已排期占用、方案目标已满、最优解下未入选，并给出每案目标缺口与满足率。候选不足无法满额时明确显示缺口，不静默补人。
+
+预览与确认分离：`POST /schedules/preview`只计算并保存预览，**不占名额**，10分钟有效；过期预览确认返回410，需重新计算。`POST /schedules/confirm`在单事务内先用行锁锁定本周已排期项，再按最新冻结名单与已占名额重算；重算入选集合与预览不一致返回409要求重算。写入受`(week_start, member_code)`唯一约束兜底，并发下若名额被他事务占用触发`IntegrityError`，**整批回滚拒绝、不产生半批数据**，重新预览后重试不会重复占用。确认后批次由`preview`变为`scheduled`，名单写入`schedule_items`并冻结；已排期名额立即参与同周后续分配，而跨周数据互不影响（同一会员可在不同周再次入选）。导出`GET /schedules/export/{week_start}`只含该周已确认名单，未确认返回404。验证覆盖交叉候选去重、无法满额缺口、过期预览拒绝、跨周隔离与并发整批拒绝重试。
+
 ## 快速启动
 
 ```sh
@@ -59,7 +73,7 @@ docker compose exec -T backend python -m scripts.seed_demo
 
 `frontend/src/{api,stores,types,components/common,hooks,pages,router,utils,constants}` 分离网络、状态、契约、共用表格/字段/状态标签、表单工具、页面和枚举。`backend/src/{routes,controllers,services,models,schemas,middlewares,utils,constants,config}` 分离HTTP、查询、算法、持久化、校验、鉴权和配置。RequestId与SecurityHeaders为两个中间件，全局错误可恢复，业务写入有审计。ORM建初表，migrations/001_initial.sql保留实际DDL，没有在线版本迁移执行器。
 
-本地开发先启动db/redis，在backend安装requirements，设置DATABASE_URL/REDIS_URL/JWT_SECRET后运行 `uvicorn src.main:app --reload`。前端静态文件通过Nginx同源代理，也可配置本地开发代理。环境变量见.env.example：COMPOSE_PROJECT_NAME、FRONTEND_PORT、BACKEND_PORT、DB_PORT、DB_PASSWORD、JWT_SECRET、SEED_DEMO、NETWORK_SUBNET。部署时替换演示凭据与密钥。
+本地开发先启动db/redis，在backend安装requirements，设置DATABASE_URL/REDIS_URL/JWT_SECRET后运行 `uvicorn src.main:app --reload`。前端静态文件通过Nginx同源代理，也可配置本地开发代理。环境变量见.env.example：COMPOSE_PROJECT_NAME、FRONTEND_PORT、BACKEND_PORT、DB_PORT、DB_PASSWORD、JWT_SECRET、SEED_DEMO、NETWORK_SUBNET。部署时替换演示凭据与密钥。后端测试用标准库unittest（FastAPI TestClient + SQLite内存库），在backend目录执行 `PYTHONPATH=. python3 -m unittest discover -s tests`，含排期算法的200组随机暴力对拍与端到端接口场景。
 
 共享枚举ROLES、STATES、FEATURES、OUTREACH_STATES在后端src/constants/enums.py和前端src/constants/enums.js；字段约束在schemas/business.py，持久化列在models/entities.py。前端共用table/fields/status，表单hooks和HTML转义utils至少两个工具。
 

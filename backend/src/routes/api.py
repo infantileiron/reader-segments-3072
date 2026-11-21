@@ -4,10 +4,14 @@ from fastapi import APIRouter,Depends,HTTPException,Response
 from sqlalchemy.exc import IntegrityError
 from src.config.database import db
 from src.models.entities import User,Reader,Segment,Outreach,Audit
-from src.schemas.business import Login,ReaderInput,SegmentInput,OutreachInput
+from src.schemas.business import (
+ Login,ReaderInput,SegmentInput,OutreachInput,
+ SchedulePreviewInput,ScheduleConfirmInput,
+)
 from src.middlewares.auth import current,editor,admin
 from src.utils.security import verify,token
 from src.services.business import audit,dump
+from src.services import schedule_store
 from src.controllers.business import ensure_segment
 router=APIRouter()
 @router.post('/auth/login')
@@ -68,5 +72,18 @@ def export_outreach(i:int,u=Depends(current),s=Depends(db)):
  r=s.get(Outreach,i)
  if not r:raise HTTPException(404,'触达方案不存在')
  return Response(json.dumps(dump(r),ensure_ascii=False,indent=2),media_type='application/json',headers={'Content-Disposition':f'attachment; filename="reader-outreach-{i}.json"'})
+@router.post('/schedules/preview')
+def schedule_preview(data:SchedulePreviewInput,u=Depends(editor),s=Depends(db)):
+ return schedule_store.create_preview(s,data)
+@router.post('/schedules/confirm')
+def schedule_confirm(data:ScheduleConfirmInput,u=Depends(editor),s=Depends(db)):
+ return schedule_store.confirm_preview(s,data.preview_token,u,audit)
+@router.get('/schedules')
+def schedule_list(u=Depends(current),s=Depends(db)):
+ return schedule_store.list_batches(s)
+@router.get('/schedules/export/{week_start}')
+def schedule_export(week_start:str,u=Depends(current),s=Depends(db)):
+ payload=schedule_store.week_export(s,week_start)
+ return Response(json.dumps(payload,ensure_ascii=False,indent=2),media_type='application/json',headers={'Content-Disposition':f'attachment; filename="reader-schedule-{week_start}.json"'})
 @router.get('/audits')
 def audits(u=Depends(admin),s=Depends(db)):return [dump(r) for r in s.query(Audit).order_by(Audit.id.desc()).limit(100)]
